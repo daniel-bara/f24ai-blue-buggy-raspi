@@ -76,15 +76,12 @@ class WallCentreLine(PathPlannerABC):
         temp_b_wall = self.fit_wall(organised_b)
         temp_y_wall = self.fit_wall(organised_y)
 
-        # print(organised_y)
-        # print(organised_b)
-
         # F22::: blue and yellow walls auto set to temp values as the walls with type 'none' return error
         self.blue_wall = temp_b_wall
         self.yellow_wall = temp_y_wall
 
-        # print('tempbwall = ', temp_b_wall, ' with length = ', len(temp_b_wall))
-        # print('tempywall = ', temp_y_wall, ' with length = ', len(temp_y_wall))
+        #print('tempbwall = ', temp_b_wall, ' with length = ', len(temp_b_wall))
+        #print('tempywall = ', temp_y_wall, ' with length = ', len(temp_y_wall))
 
         # update saved walls if appropriate
         if len(temp_b_wall) > 1:
@@ -92,7 +89,7 @@ class WallCentreLine(PathPlannerABC):
         if len(temp_y_wall) > 1:
             self.yellow_wall = temp_y_wall
 
-        length = max(len(self.blue_wall), len(self.yellow_wall))
+        length = min(len(self.blue_wall), len(self.yellow_wall))
 
         def avg_coords(j):
             """
@@ -123,43 +120,29 @@ class WallCentreLine(PathPlannerABC):
         Given the center line, transform the points to be in the coordinate frame of the car
         Fit a line centered on the car onto the points
         """
-        
-        resolution = 20
-
         if len(coords) <= 1:
-            points = []
-            for i in range(resolution):
-                points.append(coords[0])
-            return points
+            return coords
 
         ### F22::: unzip the coords correctly in one line
         # xyz, weights = zip(*coords)
         # x, y, _ = zip(*xyz)
         x, y, weights = zip(*coords)
 
+        resolution = 20
+
         k = 1 if len(coords) <= 2 else 2
 
         points = np.array([x, y]).T
-
         # Linear length along the line:
         distance = np.cumsum(np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1)))
         distance = np.insert(distance, 0, 0)/distance[-1]
-        
+
         # Build a list of the spline function, one for each dimension:
         splines = [UnivariateSpline(distance, coords, w=weights, k=k, s=s) for coords in points.T]
 
         # Computed the spline for the asked distances:
         alpha = np.linspace(0, 1, resolution)
-
-        i=0
-        for spl in splines:
-            i+=1
-            if i==1:
-                points_fitted=spl(alpha)
-            else:
-                points_fitted = np.vstack((points_fitted,spl(alpha)))
-        points_fitted = points_fitted.T
-        #points_fitted = np.vstack(spl(alpha) for spl in splines).T
+        points_fitted = np.vstack(spl(alpha) for spl in splines).T
 
         new_x, new_y = zip(*points_fitted)
 

@@ -1,261 +1,199 @@
 # This script ...
 
-import time
-import os
 import numpy as np
-from numpy import pi
 import cv2
-import sys
+import time
 from menu import MainMenu
-from tools.delayed_interrupt import DelayedKeyboardInterrupt
-from tools.control_request import ControlRequest
-from camera.pi_camera import RPiCamera
+from delayed_interrupt import DelayedKeyboardInterrupt
+from HexConv import steerCAN, motorCAN
 from camera.laptop_camera import LaptopCamera
-from camera_perception import CVCameraPerceptionSlide
+from camera.pi_camera import RPiCamera
+from camera_perception import CVCameraPerception
 from path_planner import WallCentreLine
+# from path_follower.path_follower_update import PathFollowing
 from path_follower.arc_path_follower import PathFollowing
-from RPi import GPIO
-# NOTE: importing above takes ~7seconds
+import RPi.GPIO as GPIO
 
-from picamera.array import PiRGBArray
-from picamera import PiCamera
+def stats(t,i): # Print timing stats following stop command
 
-def stats(camera, t,i): # Print timing stats following stop command
+    print('\n')
+    print('Total runtime:         ' + str(round(t,3)) + ' seconds' )
+    print('Total frames:          ' + str(i) + ' frames' )
+    print('Average frame rate:    ' + str(round(i/t,2)) + ' Hz\n')
 
-    RES = camera.res
+def ramp_down(P, com): # Ramp motor power down to zero (and steer->90)
 
-    rt = str(round(t,3))
-    f = str(i)
-    fr = str(round(i/t,2))
+    print("\nStopping...\n")
 
-    txt1 = 'Total runtime:          ' + rt + ' seconds'
-    txt2 = 'Total frames:           ' + f + ' frames'
-    txt3 = 'Average frame rate:     ' + fr + ' Hz'
+    steerCAN(90, com)
+    
+    steps = np.floor(P/5)
+    
+    for ts in range(int(steps)):
+        pwr = 5*(steps-ts-1)
+        motorCAN(pwr, com)
+        time.sleep(0.25)
 
-    print('\n' + txt1 + '\n' + txt2 + '\n' + txt3 + '\n')
+SEND_COMMS = 0      # send CAN commands?
+ARC_RADIUS = 0.75   # path follower arc radius in m
 
-    if camera.save:
+TESTING_MODE = 0    # terminates program after 'NT' frames when True
+NT = 100
 
-        final_frame = np.zeros((RES[1],RES[0],3), np.uint8)
-        font = cv2.FONT_HERSHEY_SIMPLEX
+# Motor ramp vars
+pwr_MAX = 50
+t_RAMP = 5
 
-        txt_col = (0,255,0)
+# Set up stop button press recognition
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(21,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.add_event_detect(21,GPIO.FALLING,bouncetime=2000)
 
-        final_frame = cv2.putText(final_frame, txt1, (10,int(RES[1]*2/5)), font, 0.6, txt_col, 1, cv2.LINE_AA)
-        final_frame = cv2.putText(final_frame, txt2, (10,int(RES[1]*1/2)), font, 0.6, txt_col, 1, cv2.LINE_AA)
-        final_frame = cv2.putText(final_frame, txt3, (10,int(RES[1]*3/5)), font, 0.6, txt_col, 1, cv2.LINE_AA)
+# Enter menu
+menu = MainMenu()
+menu.__init__()
+[menu_display, menu_sliders, menu_mode, menu_save, menu_morph] = menu.main_menu()
 
-        for _ in range(3):
+# Set up CAN interface, set steering to straight
+if SEND_COMMS:
+    bashCommand = 'sudo ip link set can0 up type can bitrate 500000'
+    spc(bashCommand, shell=True)
+    steerCAN(90, SEND_COMMS)
 
-            camera.save_frame(final_frame)
+# MENU OPTION
+# Create class instances
+if menu_mode: # if in laptop mode
+    camera = LaptopCamera(menu_save)
+else: # if in PI mode
+    camera = RPiCamera(menu_save)
 
+# Initialise video feed
+if menu_display:
+    blank = np.zeros((camera.RESOLUTION[0],camera.RESOLUTION[1],3),np.uint8)
+    cv2.imshow("Result", blank)
 
-if __name__ == "__main__":
+# camera perception
+cv_perception = CVCameraPerception(menu_sliders, menu_mode, menu_morph) # runs init automatically
+cv_perception.__init__(menu_sliders, menu_mode, menu_morph)
 
-    VERTICAL_RES = 360
-    ARC_DISTANCE = 0.6
-    FNAME = ''
+# path planner
+wall_line = WallCentreLine()
+wall_line.__init__()
 
-    UNPLUG_ETH = 0
-    TESTING_MODE = 0
-    NT = 100
+# path follower
+path_follower = PathFollowing()
+path_follower.__init__()
 
-    SEND_REQS = [1,1] # [motor,steer]
+# Init vehicle vectors
+# vehicle_position, vehicle_forward, vehicle_right = vehicle_vectors
+# vehicle vectors set to the approximate position of the front axis of vehicle relative to camera origin
+vehicle_vectors = [0,550,320]
 
-    # Motor ramp vars
-    pwr_MAX = 20
-    t_RAMP = 2
+# initialise lidar here
+#######
 
-    # Set up button press recognition
-    channel = 16
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(channel,GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.add_event_detect(channel,GPIO.FALLING,bouncetime=1000)
+# allow the camera & lidar to warmup
+time.sleep(0.1)
 
-    # Quick input toggle (-d for defaults | -v for video ON + defaults)
-    if np.size(sys.argv,0)>1:
-        menu_arg = sys.argv[1]
-    else:
-        menu_arg=0
+W = 0.5
 
-    # Enter menu
-    menu = MainMenu()
-    [menu_display, menu_sliders, menu_mode, menu_save, menu_morph] = menu.main_menu(menu_arg)
+pwr = 0
+tT = 0
+n_frames = 0
 
-    # Initialise class objects
-    cv_perception = CVCameraPerceptionSlide(menu_sliders, menu_mode, menu_morph)
-    wall_line = WallCentreLine()
-    path_follower = PathFollowing()
-    control_request = ControlRequest(SEND_REQS,t_RAMP,pwr_MAX)
+T0=time.time()
+avgT = 0
 
-    # 4:3 approximate aspect ratio
-    if VERTICAL_RES == 360:
-        RES = [480,368] # avoid restructuring warnings for this specific res
-    else:
-        RES = [int(VERTICAL_RES*4/3),VERTICAL_RES]
+while True:
+    
+    try:
 
-    # Create class instance, get frame to warm up
-    if menu_mode: # if in laptop mode
-        camera = LaptopCamera(RES, menu_save)
-    else: # if in PI mode
-        camera = RPiCamera(RES, menu_save, name=FNAME, pwr=pwr_MAX, r=ARC_DISTANCE)
+        print(' > Frame ' + str(int(n_frames+1)))
 
-    # Temp iterator
-    i = 0
+        t0 = time.time()
 
-    # Init vehicle vectors (vehicle_position, vehicle_forward, vehicle_right)
-    vehicle_vectors = [0, RES[1]*1.2, RES[0]/2]
+        with DelayedKeyboardInterrupt(): # allow this code to finish before interrupting
+            
+            image = camera.get_frame()
+            T1=time.time()
+            print(T1-T0)
+            avgT=(avgT*n_frames+(T1-T0))/(n_frames+1)
+        
+        [percept_frame, blue_p, yellow_p] = cv_perception.get_cones(image)
+        output = percept_frame
 
-    # Initialise video feed
-    if menu_display:
-        blank = np.ones((RES[1],RES[0],3), np.uint8)
-        cv2.imshow("Result",blank)
+        [c_line, meta] = wall_line.path_generator(blue_p, yellow_p, vehicle_vectors)
 
-    tT = 0
-    n_frames = 0
+        angle = path_follower.get_steer(c_line, ARC_RADIUS, 50, image)
 
-    # Waits for ethernet unplug
-    if UNPLUG_ETH:
+        if angle is None:
+            angle = 90
+        
+        for i in range(len(c_line)):
+            if np.isnan(c_line[0][0]) == False:
+                output = cv2.circle(output, (round(c_line[i][0]), round(c_line[i][1])), 3, [255, 255, 255], -1)
 
-        eth_loc = '/../../sys/class/net/eth0/carrier'
-        loop = 0
+        output = cv2.flip(output,1)
 
-        while int(open(eth_loc, 'r').read()):
-            # ^file reads 1 when eth plugged in, 0 when not
+        # MENU OPTIONS
+        if menu_display:
+            # Display image
+            cv2.imshow("Result", output)
 
-            if loop == 0:
-                print('\nWaiting for ethernet to be unplugged...')
-                loop = 1
+        # if menu_save is true, save frame to file
+        if menu_save:
+            camera.save_frame(output)
 
-    # Then wait for button press to begin execution
-    print('\nWaiting for button press...')
-    while True:
+        t1 = time.time()
+        tR = tT+t1-t0
+        
+        # Ramp up motor power
+        if tR < t_RAMP:
+            pwr = tR*pwr_MAX/t_RAMP
+        elif pwr == 0:
+            pwr = pwr_MAX/2
+        else:
+            pwr = pwr_MAX
+        
+        # Format and send motor and steering commands via CAN (togglable)
+        motorCAN(pwr, SEND_COMMS)
+        steerCAN(angle, SEND_COMMS)
 
-        if GPIO.event_detected(channel):
+        # Iterate frame number
+        n_frames += 1
+
+        t2 = time.time()
+        tT += t2-t0
+
+        # if the `q` key was pressed, break from the loop
+        key = cv2.waitKey(10) & 0xFF
+        if key == ord("q") or GPIO.event_detected(21):
+
+            ramp_down(pwr,SEND_COMMS)
+
             break
 
-    time.sleep(1)
+        if TESTING_MODE and n_frames==NT:
+            break
 
-    t0 = time.time()
-    control_request.reset_timer()
+        #cv2.waitKey(10)
+        T0=time.time()
 
-    # MAIN LOOP
-    try: # for 'CTRL-C' handler
+    
+    except KeyboardInterrupt: # CTRL-C will break the loop to terminate program properly
 
-        while True:
+        ramp_down(pwr,SEND_COMMS)
 
-            print(' > Frame ' + str(int(n_frames+1)))
+        break
 
-            with DelayedKeyboardInterrupt(): # allow this code to finish before interrupting
-                
-                # Collect image data
-                image = camera.get_frame()
+# Release saved video file
+cv2.destroyAllWindows()
 
-            # Identify cones within scene from camera
-            [percept_frame, blue_p, yellow_p] = cv_perception.get_cones(image) # *time consuming
-            output = percept_frame
+print(round(avgT,3))
 
-            [c_line, meta] = wall_line.path_generator(blue_p, yellow_p, vehicle_vectors)
+# Print time stats
+stats(tT,n_frames)
 
-            # Calculate steering angle
-            angle = path_follower.get_steer_arc(c_line, ARC_DISTANCE, 50, image)
-            # angle = path_follower.get_steer_direct(c_line, image)
-
-            # Display path line on image
-            for i in range(len(c_line)):
-                if np.isnan(c_line[0][0]) == False:
-                    output = cv2.circle(output, (round(c_line[i][0]), round(c_line[i][1])), 3, [255, 255, 255], -1)
-
-            # Display image and set up stop key
-            if menu_display:
-                cv2.imshow("Result", output) # *time consuming
-
-            # Save image to file
-            if menu_save:
-                camera.save_frame(output)
-
-            # Ramp up motor power on each frame until constant
-            pwr = control_request.ramp_up_step()
-
-            # Send steering request
-            control_request.send_steer(angle)
-
-            n_frames += 1
-
-            t1 = time.time()
-            tT += t1-t0
-
-            # if the `q` key was pressed, break from the loop
-            key = cv2.waitKey(10) & 0xFF
-            if key == ord("q"):
-                break
-
-            # Check for 1st button press
-            if GPIO.event_detected(channel):
-
-                print('\n*HOLD MODE*')
-
-                # Immediately stop vehicle ('HOLD' mode)
-                control_request.ramp_down(pwr)
-
-                while True:
-
-                    # 2nd press -> continue execution ('RESTART' mode) unless 3rd press detected
-                    if GPIO.event_detected(channel):
-
-                        # Hold time
-                        time.sleep(1)
-
-                        # Still pressed -> shut system down ('STOP' mode)
-                        if GPIO.input(channel) == GPIO.LOW:
-
-                            print("\n*TERMINATING EXECUTION...*") 
-
-                            # Twitch to visibly indicate termination
-                            control_request.twitch()
-
-                            # Before exit, print time stats
-                            stats(camera,tT,n_frames)
-
-                            # Shutdown or terminate program
-                            # os.system("sudo shutdown -h now")
-                            sys.exit()
-
-                        # If not held press, restart
-                        print('\n*RESTARTING...*')
-
-                        # Before continuing, print time stats and reset vars
-                        stats(camera, tT, n_frames)
-                        tT = 0
-                        n_frames = 0
-
-                        time.sleep(2)
-
-                        # Reset timer to allow speed to ramp up again
-                        control_request.reset_timer()
-
-                        break # out of button loop, NOT main loop
-
-                    # Limit checking to 20Hz
-                    time.sleep(1/20)
-
-            # if in testing, break after NT frames
-            if TESTING_MODE and n_frames==NT:
-                break
-
-            t0 = time.time()
-
-
-    except KeyboardInterrupt:
-        pass
-
-
-    # Ramp down speed, steer to 90
-    control_request.ramp_down(pwr)
-
-    # Show time stats
-    stats(camera,tT,n_frames) 
-
-    # Shut down
-    #print("\nShutting down...\n")  
-    #os.system("sudo shutdown -h now")
+# Shut down
+#print("\nShutting down...\n")  
+#os.system("sudo shutdown -h now")

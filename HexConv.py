@@ -15,7 +15,7 @@ def motorCAN(val, a):
     hexa = round(abs(val)*19.5, 0)
     
     H1 = hexify(hexa % 256)
-    H2 = hexify(hexa // 256)
+    H2 = hexify(np.floor(hexa/256))
     
     bashCommand = ['cansend can0 522#' + H1 + H2 + '000000000000']
     
@@ -35,7 +35,7 @@ def steerCAN(val, a):
     hexa = round(abs(val)*10, 0)
     
     H1 = hexify(hexa % 256)
-    H2 = hexify(hexa // 256)
+    H2 = hexify(np.floor(hexa/256))
     
     bashCommand = ['cansend can0 523#' + H1 + H2 + '000000000000']
 

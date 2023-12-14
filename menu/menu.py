@@ -1,25 +1,33 @@
+### menu.py
+# author - Thomas
+# This class handles the menu parameters, allowing the program to be configured at startup
+# The user can chose between using default settings or configuring every one themselves
+# CONFIGURATION OPTIONS:
+#   DISPLAY     - shows the live output frame in terminal
+#   HSV_SLIDERS - (only if display is on) creates sliders allowing for live configuration of colour ranges
+#   MODE        - 0 = run on PI. 1 = run on laptop. (changes the default hsv values accordingly)
+#   SAVE        - save the output video (named 'output') in the file where the program was run
+
+
+
 class MainMenu:
 
     # DEFAULT SETTINGS
-    display = False
+    display = True
     hsv_sliders = False
-    hsv_mode = False # PI camera
+    mode = False # laptop camera
     save = True
-    morph = True
+    morph = False
 
     def __init__(self):
         pass
 
-    def main_menu(self,arg):
+    def main_menu(self):
 
-        if arg == '-v':
-            self.display = True
+        if (not self.take_input('Default_settings? y/n: ','y','n')):
+            self.user_configure()
 
-        elif arg != '-d':
-            if (not self.take_input('Default_settings? y/n: ','y','n')):
-                self.user_configure()
-
-        return [self.display, self.hsv_sliders, self.hsv_mode, self.save, self.morph]
+        return [self.display, self.hsv_sliders, self.mode, self.save, self.morph]
 
 
     # user_configure
@@ -30,7 +38,7 @@ class MainMenu:
         self.display = self.take_input('show display? y/n: ','y','n')
         if self.display == True:
             self.hsv_sliders = self.take_input('colour sliders? y/n: ','y','n')
-        self.hsv_mode = self.take_input('colour mode? laptop/pi: ','l','p')
+        self.mode = self.take_input('colour mode? laptop/pi: ','l','p')
         self.save = self.take_input('save video? y/n: ','y','n')
         self.morph = self.take_input('closed morphology? (improved cone detection, slower speed) y/n: ','y','n')
 

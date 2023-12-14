@@ -2,42 +2,30 @@
 ## It is designed to be used in the same way as the Raspberry Pi camera to operate between the two simply
 ## It contains functions to save recorded video to file
 
+from .camera_base import CameraBase
 import cv2
 import numpy as np
 
-class LaptopCamera:
+class LaptopCamera(CameraBase):
 
-    def __init__(self,res,save): # Initialises laptop camera
+    def __init__(self, menu_save): # Initialises laptop camera
 
-        self.res = res
-        self.save = save
+        # Run __init__ for the parent class
+        super().__init__(menu_save)
 
         # create a class for the laptop camera
-        self.cap = cv2.VideoCapture(0)
+        self.CAP = cv2.VideoCapture(0)
 
         # define frame size
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, res[0])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, res[0])
+        self.CAP.set(cv2.CAP_PROP_FRAME_WIDTH, self.RESOLUTION[0])
+        self.CAP.set(cv2.CAP_PROP_FRAME_HEIGHT, self.RESOLUTION[1])
 
         # verify functionality
-        if not self.cap.isOpened():
+        if not self.CAP.isOpened():
             raise IOError("Cannot open webcam")
-
-        if self.save:
-            # Define the codec and create VideoWriter object
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            self.saver = cv2.VideoWriter('output.avi', fourcc, 10.0, (self.res[0], self.res[1]))
-    
 
     def get_frame(self): # reads the camera to output a frame
 
-        frame = ret, frame = self.cap.read()
+        frame = ret, frame = self.CAP.read()
 
         return frame
-
-    def save_frame(self,image): # Saves current frame to file
-
-        # save the frame
-        self.saver.write(image)
-
-        return saver
